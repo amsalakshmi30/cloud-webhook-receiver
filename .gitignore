@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+terraform/.terraform/
+terraform/build/
+terraform/*.tfstate*
+terraform/backend_override.tf
+terraform/*.tfvars
+.env

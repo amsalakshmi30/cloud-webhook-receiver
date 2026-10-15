@@ -1,0 +1,66 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  id-token: write   # only needed if you switch to OIDC role assumption
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests
+        run: python -B -m unittest discover -s tests -v -b
+      - uses: hashicorp/setup-terraform@v3
+      - name: Terraform validate
+        working-directory: terraform
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+  deploy:
+    # Runs only on main, after tests pass, and only if the repo variable ENABLE_DEPLOY is "true".
+    needs: test
+    if: github.ref == 'refs/heads/main' && vars.ENABLE_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ap-south-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+      - name: Use S3 remote state (so CI and your laptop share one state)
+        working-directory: terraform
+        run: |
+          cat > backend_override.tf <<'EOF'
+          terraform {
+            backend "s3" {}
+          }
+          EOF
+      - name: Terraform init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=webhook-receiver/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+      - name: Terraform apply
+        working-directory: terraform
+        run: terraform apply -auto-approve
+      - name: Smoke test the deployed endpoint
+        working-directory: terraform
+        run: |
+          URL=$(terraform output -raw api_url)
+          curl -fsS "$URL/health"
